@@ -20,12 +20,16 @@ with st.expander("**ℹ️    About this app**", expanded=False):
         """
     )   
 
+
 @st.cache_data
 def load_data():
-    if not os.path.exists("data_b.csv"):
-        st.error("🚨 'data_b.csv' not found! Make sure it is in your project folder.")
+    # Update the tracking name to match your zipped repository asset
+    if not os.path.exists("data_b.zip"):
+        st.error("🚨 'data_b.zip' not found! Make sure it is pushed to your GitHub project folder.")
         st.stop()
-    return pd.read_csv("data_b.csv")
+    
+    # Pandas automatically detects the zip compression and parses the internal CSV!
+    return pd.read_csv("data_b.zip")
 
 # Load data baseline
 df = load_data()
@@ -58,7 +62,7 @@ def get_trained_model(_data_df):
     
     X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     
-    # Exact hyperparameters copied directly from your .ipynb code cell [7]
+    # Exact hyperparameters copied directly from your .ipynb code cell
     trained_model = RandomForestClassifier(
         n_estimators=50, 
         max_depth=10, 
@@ -138,89 +142,118 @@ X_single = pd.DataFrame([{
 # ====================================================================
 # 3. ACTION EVENT RUNNER (PREDICT BUTTON CLICK)
 # ====================================================================
-# ====================================================================
-# 3. ACTION EVENT RUNNER (PREDICT BUTTON CLICK)
-# ====================================================================
 st.markdown("---")
 st.info("⚙️ Configuration locked. Click below to execute model calculations.")
 
 if st.button("🔮 Predict Addiction Likelihood", type="primary", use_container_width=True):
     st.subheader("🎯 Prediction Output Metrics")
     
-    # Restructured into 2 columns for wider, clean visual layout
-    col_pie, col_plot = st.columns(2)
-    
+    # Calculate Model Probabilities
     probabilities = my_model.predict_proba(X_single)
     prob_addicted = float(probabilities[0][1])  # Class 1 probability
     prob_safe = float(probabilities[0][0])      # Class 0 probability
+
+    # DYNAMICALLY FIND THE BEST FEATURE
+    features_list = [
+        'age', 'daily_screen_time_hours', 'social_media_hours', 'gaming_hours',
+        'work_study_hours', 'sleep_hours', 'notifications_per_day',
+        'app_opens_per_day', 'weekend_screen_time',
+        'nominal__gender_female', 'nominal__gender_male',
+        'nominal__gender_other', 'nominal__gender_nan', 'ordinal__stress_level',
+        'ordinal__academic_work_impact'
+    ]
+    importances = my_model.feature_importances_
+    best_feature_idx = np.argmax(importances)
+    best_feature_name = features_list[best_feature_idx]
+    readable_feature_name = best_feature_name.replace("_", " ").title()
+    user_current_value = float(X_single[best_feature_name].iloc[0])
+
+    # CALCULATE OPTIMAL THRESHOLD (The turning point before addiction risk spikes > 50%)
+    # We test values across the feature range to find where the risk crosses 50%
+    feature_min = float(df[best_feature_name].min())
+    feature_max = float(df[best_feature_name].max())
+    test_grid = np.linspace(feature_min, feature_max, 100)
     
+    X_scan = pd.concat([X_single] * 100, ignore_index=True)
+    X_scan[best_feature_name] = test_grid
+    scan_probs = my_model.predict_proba(X_scan)[:, 1]
+    
+    # Find the maximum value allowed before risk exceeds 50%
+    safe_indices = np.where(scan_probs <= 0.5)[0]
+    if len(safe_indices) > 0:
+        optimal_cutoff = float(test_grid[safe_indices[-1]])
+    else:
+        optimal_cutoff = float(feature_min) # Default fallback
+
     # ====================================================================
-    # THE PIE PERCENTAGE CHART
+    # ROW 1: THE PIE CHART AND THE DENSITY CURVE SIDE-BY-SIDE (2 COLUMNS ONLY)
     # ====================================================================
-    with col_pie:
-        # Build the exact mapping layout for the Plotly engine
+    row1_col1, row1_col2 = st.columns(2)
+    
+    with row1_col1:
         pie_df = pd.DataFrame({
             "Risk Assessment": [f"Addiction Risk ({prob_addicted:.1%})", f"Safe Status ({prob_safe:.1%})"],
             "Probability Ratio": [prob_addicted, prob_safe]
         })
-        
         fig_pie = px.pie(
-            pie_df, 
-            names="Risk Assessment", 
-            values="Probability Ratio", 
-            hole=0.5, # Makes it a modern donut chart
+            pie_df, names="Risk Assessment", values="Probability Ratio", hole=0.5,
             color="Risk Assessment",
             color_discrete_map={
-                f"Addiction Risk ({prob_addicted:.1%})": "#FF4B4B", # Red for danger
-                f"Safe Status ({prob_safe:.1%})": "#00F0A0"       # Green for safe
+                f"Addiction Risk ({prob_addicted:.1%})": "#FF4B4B",
+                f"Safe Status ({prob_safe:.1%})": "#00F0A0"
             },
-            title="🎯 Overall Addiction Risk Share Percentage"
+            title="🎯 Overall Addiction Risk Share"
         )
-        
-        # Display the custom chart
         st.plotly_chart(fig_pie, use_container_width=True)
         
-        # Display a quick status banner below the pie
         if prob_addicted > 0.5:
-            st.error(f"🚨 Status: High Likelihood of Smartphone Addiction ({prob_addicted:.1%})")
+            st.error(f"🚨 **Status Alert**: This configuration carries a **{prob_addicted:.1%}** mathematical probability of addiction.")
         else:
-            st.success(f"✅ Status: Controlled Smartphone Activity Profile ({prob_safe:.1%})")
+            st.success(f"✅ **Status Safe**: This configuration carries only a **{prob_addicted:.1%}** addiction risk value.")
 
-    # Baseline Data Metric Comparison Chart
-    with col_plot:
-        avg_data = pd.DataFrame({
-            'Feature Class': ['Weekend Hours', 'Daily Weekday Hours'],
-            'User Settings': [feature9, feature2],
-            'Dataset Average Reference': [df['weekend_screen_time'].mean(), df['daily_screen_time_hours'].mean()]
-        }).melt(id_vars='Feature Class', var_name='Metric Context', value_name='Hours')
+    with row1_col2:
+        # Build smooth line density graph
+        counts = df[best_feature_name].value_counts().sort_index().reset_index()
+        counts.columns = [best_feature_name, 'Count']
         
-        fig_bar = px.bar(avg_data, x='Feature Class', y='Hours', color='Metric Context', barmode='group', title="📊 Input Metrics Context Map")
-        st.plotly_chart(fig_bar, use_container_width=True)
+        fig_dist = px.line(
+            counts, x=best_feature_name, y='Count',
+            title=f"📈 Population Density vs Your Inputs ({readable_feature_name})",
+            labels={best_feature_name: readable_feature_name, 'Count': 'Frequency Density'},
+            line_shape='spline', color_discrete_sequence=['#4A5A6A']
+        )
+        fig_dist.update_traces(fill='tozeroy')
+        
+        # Red Dash Line = Your Choice
+        fig_dist.add_vline(
+            x=user_current_value, line_width=3, line_dash="dash", line_color="#FF4B4B",
+            annotation_text=" Your Input", annotation_position="top left"
+        )
+        
+        # Solid Green Line = Optimal Limit
+        fig_dist.add_vline(
+            x=optimal_cutoff, line_width=4, line_color="#00F0A0",
+            annotation_text=" Optimal Max Limit", annotation_position="bottom right"
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
+        st.metric(
+            label=f"🟢 Maximum {readable_feature_name} before risk hits 50%", 
+            value=f"{optimal_cutoff:.1f} Hours"
+        )
 
 
     # ====================================================================
-    # 4. FIXED INDICES FOR MULTI-CLASS TREEEXPLAINER SHAP EXECUTION
+    # ROW 2: BAR CHART (FULL WIDTH SO IT DOES NOT SQUEEZE)
     # ====================================================================
     st.markdown("---")
-    st.subheader("🔍 Local Prediction Impact Breakdown (SHAP Chart)")
+    avg_data = pd.DataFrame({
+        'Feature Class': ['Weekend Hours', 'Daily Weekday Hours'],
+        'Your Configuration': [feature9, feature2],
+        'Dataset Average Reference': [df['weekend_screen_time'].mean(), df['daily_screen_time_hours'].mean()]
+    }).melt(id_vars='Feature Class', var_name='Metric Context', value_name='Hours')
     
-    with st.spinner("Decoding layout nodes via TreeExplainer..."):
-        try:
-            tree_explainer = shap.TreeExplainer(my_model)
-            shap_values_single = tree_explainer(X_single)
-            
-            # Squeezing the multidimensional arrays cleanly to prevent IndexError loops
-            exp_single = shap.Explanation(
-                values=shap_values_single.values[0, :, 1], # Class 1
-                base_values=shap_values_single.base_values[0, 1], # Squeezed base value for class 1
-                data=X_single.values[0],
-                feature_names=X_single.columns
-            )
-            
-            fig, ax = plt.subplots(figsize=(12, 3))
-            shap.plots.force(exp_single, matplotlib=True, show=False)
-            st.pyplot(plt.gcf())
-            plt.clf()
-            
-        except Exception as e:
-            st.error(f"Could not build internal validation graphics plot: {e}")
+    fig_bar = px.bar(
+        avg_data, x='Feature Class', y='Hours', color='Metric Context', barmode='group', 
+        title="📊 Context Map: Your Metrics vs Dataset Averages"
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
